@@ -122,6 +122,48 @@ changes the decision on 42 % (`refunds`) and 44 % (`access`) of cases, 29 % to 4
 0.1 or above 0.9. Style replays flip 42 % to 62 %, so at baseline any persuasion effect is small beside the
 model's run-to-run inconsistency, which is itself the larger measurable weakness.
 
+### Controls
+
+The [protocol](halo-ops-claims-protocol.md)'s cheap controls on the development cases: `openai/gpt-oss-20b`,
+requester `anthropic/claude-haiku-5.5`, 200 deploy-cue cases per domain (standard wording) and 50 paraphrased cases
+(`stress.jsonl`, `wording: alt`).
+
+| Domain, run | Utility | Bound | Harmful | Fraud denied | Honest approved | Undecided | Follows own belief |
+|---|---|---|---|---|---|---|---|
+| access, guided | 0.528 | 0.746 | 13.5 % | 3.9 % | 78.9 % | 13.0 % | 0.72 |
+| access, explicit | 0.558 | 0.746 | 18.5 % | 32.5 % | 77.2 % | 13.5 % | 0.95 |
+| access, guided, belief_rule | 0.571 | 0.746 | 16.5 % | 36.4 % | 80.5 % | 17.5 % | 1.00 |
+| access, guided, silent requester | 0.566 | 0.746 | 15.0 % | 10.4 % | 76.4 % | 2.5 % | 0.70 |
+| access, guided, paraphrased | 0.475 | 0.706 | 22.0 % | 5.6 % | 81.2 % | 14.0 % | 0.88 |
+| access, explicit, paraphrased | 0.541 | 0.706 | 16.0 % | 22.2 % | 81.2 % | 20.0 % | 0.98 |
+| refunds, guided | 0.601 | 0.812 | 14.0 % | 50.5 % | 68.8 % | 12.5 % | 0.75 |
+| refunds, explicit | 0.548 | 0.812 | 15.5 % | 48.4 % | 65.1 % | 18.0 % | 0.93 |
+| refunds, guided, belief_rule | 0.637 | 0.812 | 19.0 % | 58.2 % | 82.6 % | 8.0 % | 1.00 |
+| refunds, guided, silent requester | 0.621 | 0.812 | 18.0 % | 69.2 % | 52.3 % | 2.0 % | 0.71 |
+| refunds, guided, paraphrased | 0.514 | 0.780 | 20.0 % | 38.9 % | 59.4 % | 12.0 % | 0.80 |
+| refunds, explicit, paraphrased | 0.471 | 0.780 | 26.0 % | 55.6 % | 53.1 % | 16.0 % | 1.00 |
+
+No control's paired utility change against `guided` has an interval that excludes zero (200 cases). The explicit
+prompt and the belief rule make actions follow the stated probability (0.93 to 1.00) and fix `access`'s missing
+denials, but move utility by at most 0.04 to 0.07: on paraphrased cases the explicit prompt closes 29 % of the gap to
+the bound on `access` and none on `refunds`, short of the protocol's stop rule. The silent requester cuts undecided
+episodes by 10 points in both domains (interval excludes zero): the dialogue causes most unrecorded decisions and adds
+no utility.
+
+The stated probability carries the remaining gap. Brier scores, with the exact posterior and the prior alone as
+references:
+
+| Domain, wording | Agent | Exact posterior | Prior only |
+|---|---|---|---|
+| access, standard | 0.176 | 0.135 | 0.230 |
+| access, paraphrased | 0.236 | 0.130 | 0.225 |
+| refunds, standard | 0.155 | 0.081 | 0.249 |
+| refunds, paraphrased | 0.238 | 0.167 | 0.233 |
+
+On standard wording the model's probabilities capture 56 to 57 % of the possible improvement over the prior; on
+paraphrased records they are no better than the prior. The paraphrase table has not been checked against a stronger
+model, so part of that drop may be the wording rather than the model.
+
 ## Limits
 
 - The scripted customer replies the same whatever the agent says; train with the `llm` backend.
