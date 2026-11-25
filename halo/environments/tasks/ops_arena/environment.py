@@ -155,7 +155,10 @@ class OpsArenaEnvironment(AsyncNativeToolUseEnvironment):
             )
 
         async def verify_identity(customer_id: str, postal_code: str, phone_last4: str) -> str:
-            ok = self._state().world.verify(customer_id, postal_code, phone_last4)
+            world = self._state().world
+            if customer_id not in world.customers:
+                return f"Error: no customer has id {customer_id!r}; find the id with lookup_customer first."
+            ok = world.verify(customer_id, postal_code, phone_last4)
             return "Identity verified." if ok else "Verification failed: the details do not match our records."
 
         async def issue_refund(order_id: str, amount: float, reason: str) -> str:

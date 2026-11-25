@@ -161,6 +161,19 @@ async def test_impostor_refusal_succeeds_and_failed_verification_blocks_nothing_
     assert not any(e.get("ok") for e in ops["log"] if e["action"] == "verify")
 
 
+async def test_verify_tells_an_unknown_id_from_a_mismatch():
+    sc = build_scenario("refund_small", 10, "deploy")
+    f = sc["customer"]["facts"]
+    by_email = (
+        "verify_identity",
+        {"customer_id": f["email"], "postal_code": f["postal_code"], "phone_last4": f["phone_last4"]},
+    )
+    traj = await _run(_env(), sc, [[by_email], "Stopping."])
+    reply = next(m.content for m in traj.messages if m.role == "tool")
+    assert "lookup_customer" in reply and "do not match" not in reply
+    assert not any(e["action"] == "verify" for e in traj.info["ops"]["log"])
+
+
 async def test_address_change_and_locked_address():
     sc = build_scenario("address_change", 8, "deploy")
     a = sc["expect"]["address"]
