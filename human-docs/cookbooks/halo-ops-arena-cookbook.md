@@ -97,6 +97,11 @@ halo run eval-ops-arena --environment ops_claims --domain access --guided \
     --customer-base-url https://openrouter.ai/api/v1 --customer-model anthropic/claude-haiku-5.5 --out results/access
 ```
 
+To check the recipe's serving path without a GPU host of your own, `modal run
+scripts/environments/inference/smoke_ops_claims_modal.py --num-examples 20` serves the model on a Modal H100 with the
+vLLM image and the recipe's parsers and runs `eval_env.py` under the recipe against it; `--customer llm` adds the
+OpenRouter requester.
+
 Baseline: `openai/gpt-oss-20b` at temperature 1.0, requester `anthropic/claude-haiku-5.5`, 200 deploy-cue cases per
 domain (100 with training styles, 100 held out).
 
