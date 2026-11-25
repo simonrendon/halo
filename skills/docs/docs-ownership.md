@@ -207,7 +207,7 @@ changes.
 | `halo/environments/episodes/episode_scoring.py` | `agent-docs/training-methods/grpo/rewards/README.md`, `agent-docs/training-methods/async-grpo/environments/custom.md` |
 | `halo/environments/protocols/` | `agent-docs/training-methods/async-grpo/environments/protocols/{native-tool-use,react,mcp}.md` |
 | `halo/environments/tasks/coding/`, `halo/environments/tasks/qa.py` | `agent-docs/training-methods/async-grpo/environments/tasks/{swe,qa-benchmarks}.md`, `agent-docs/training-methods/async-grpo/environments/tasks/code-contests/*.md` |
-| `halo/environments/tasks/ops_arena/` | `agent-docs/training-methods/async-grpo/environments/tasks/ops-arena.md`, `human-docs/cookbooks/halo-ops-arena-cookbook.md` |
+| `halo/environments/tasks/ops_arena/` | `agent-docs/training-methods/async-grpo/environments/tasks/ops-arena.md`, `agent-docs/training-methods/async-grpo/environments/tasks/ops-claims.md`, `human-docs/cookbooks/halo-ops-arena-cookbook.md` |
 | `halo/environments/sandbox/` | `agent-docs/training-methods/async-grpo/environments/sandbox.md` |
 | `halo/environments/tools/` | `agent-docs/training-methods/async-grpo/environments/protocols/native-tool-use.md`, `agent-docs/training-methods/async-grpo/environments/tasks/swe.md` |
 | `halo/environments/rollouts/engine_wire.py`, `halo/environments/episodes/candidate_logprobs.py` | `agent-docs/infrastructure/rollout-servers.md`, `agent-docs/training-methods/async-grpo/{episodes,reasoning}.md` |

@@ -8,8 +8,6 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from halo.environments.tasks.ops_arena.scenarios import scripted_replies
-
 END_TOKEN = "[END]"
 
 _PERSONA_RULES = {
@@ -79,18 +77,18 @@ class CustomerAgent:
                 model=self.model, messages=[{"role": "user", "content": "ping"}], max_tokens=1
             )
 
-    async def reply(self, scenario: dict[str, Any], chat: list[dict[str, str]]) -> str:
-        """``chat`` alternates ``agent``/``customer`` turns, the opening customer line first. Returns the next customer
-        line; it ends with END_TOKEN once the customer is done."""
+    async def reply(self, persona_prompt: str, script: list[str], chat: list[dict[str, str]]) -> str:
+        """The next customer line: ``script``'s next entry under ``scripted``, else the LLM playing ``persona_prompt``.
+        ``chat`` alternates ``agent``/``customer`` turns, the opening customer line first; the returned line ends with
+        END_TOKEN once the customer is done."""
         n_customer = sum(1 for t in chat if t["role"] == "customer")
         if n_customer > self.max_customer_turns:
             return f"I have to go now. {END_TOKEN}"
         if self.backend == "scripted":
-            script = scripted_replies(scenario)
             i = n_customer - 1  # the opening line is not in the script
             return script[i] if i < len(script) else f"Okay, thanks. {END_TOKEN}"
         # The simulator sees the conversation from the customer's side: the agent is "user", it is "assistant".
-        messages = [{"role": "system", "content": build_customer_system_prompt(scenario)}]
+        messages = [{"role": "system", "content": persona_prompt}]
         for turn in chat:
             messages.append({"role": "assistant" if turn["role"] == "customer" else "user", "content": turn["text"]})
         resp = await self._llm().chat.completions.create(

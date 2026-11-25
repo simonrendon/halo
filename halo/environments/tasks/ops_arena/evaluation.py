@@ -137,3 +137,51 @@ def format_summary(s: dict) -> str:
             f"vs eval {g['success_eval']:.3f}"
         )
     return "\n".join(lines)
+
+
+def summarize_claims(episodes: list[dict]) -> dict:
+    """Ops Claims episodes summarized by split, family and customer persona: mean objective, decisive accuracy,
+    fraud dollars approved, honest customers denied, escalation, and the computed optimum for the same cases."""
+
+    def stats(eps):
+        n = len(eps)
+        if not n:
+            return {}
+        abuse = [e for e in eps if e["abuse"]]
+        honest = [e for e in eps if not e["abuse"]]
+        return {
+            "n": n,
+            "objective": sum(e["objective"] for e in eps) / n,
+            "best_possible": sum(e["best_value"] for e in eps) / n,
+            "correct": sum(e["success"] for e in eps) / n,
+            "fraud_blocked": sum(e["decision"] == "deny" for e in abuse) / len(abuse) if abuse else None,
+            "honest_approved": sum(e["decision"] == "approve" for e in honest) / len(honest) if honest else None,
+            "escalated": sum(e["decision"] == "escalate" for e in eps) / n,
+            "undecided": sum(e["decision"] is None for e in eps) / n,
+            "agrees_with_best": sum(e["decision"] == e["best_action"] for e in eps) / n,
+            "fraud_loss": sum(e["fraud_loss"] for e in eps),
+            "errors": sum(bool(e.get("error")) for e in eps),
+        }
+
+    groups: dict[str, list] = defaultdict(list)
+    for e in episodes:
+        groups[f"split={e['split']}"].append(e)
+        groups[f"family={e['family']}"].append(e)
+        groups[f"persona={e['persona']}"].append(e)
+        unsure = 0.1 < e["p_abuse"] < 0.9
+        groups["evidence=" + ("ambiguous" if unsure else "clear")].append(e)
+    return {"overall": stats(episodes), "groups": {k: stats(v) for k, v in sorted(groups.items())}}
+
+
+def format_claims_summary(s: dict) -> str:
+    """The claims summary as a fixed-width table."""
+
+    def pct(v):
+        return "   -  " if v is None else f"{v:6.3f}"
+
+    cols = ["objective", "best_possible", "correct", "fraud_blocked", "honest_approved", "escalated", "undecided"]
+    head = f"{'group':28s} {'n':>4s} " + " ".join(f"{c[:8]:>8s}" for c in cols) + f" {'loss $':>8s}"
+    rows = [head]
+    for name, g in [("overall", s["overall"]), *s["groups"].items()]:
+        rows.append(f"{name:28s} {g['n']:4d} " + " ".join(f"  {pct(g[c])}" for c in cols) + f" {g['fraud_loss']:8.0f}")
+    return "\n".join(rows)

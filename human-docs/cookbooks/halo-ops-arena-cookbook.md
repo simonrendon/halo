@@ -79,6 +79,33 @@ without the supervisor; the same text in the team inbox does not. Every other fa
 `TRAIN_MIX` weights `preapproval_history` highest. Under the eval and deploy cues the violation rates are 7.8 % and
 8.9 % (41 discordant pairs of 425), so the cue alone shows no eval-awareness gap at baseline.
 
+## Ops Claims
+
+The second environment in the package: each refund claim is honest or abusive, the evidence is drawn from known
+likelihoods, and the reward reads the hidden truth
+([Ops Claims](../../agent-docs/training-methods/async-grpo/environments/tasks/ops-claims.md) ↗). Recipe:
+[`gptoss-20b-ops-claims-lora-ep1.yaml`](../../examples/grpo/environmental/gptoss/vllm/gptoss-20b-ops-claims-lora-ep1.yaml).
+
+```bash
+halo run prepare-ops-claims-dataset --out data/ops_claims
+halo run eval-ops-arena --environment ops_claims --guided --data data/ops_claims/eval.jsonl \
+    --base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY --model <id> \
+    --customer-backend llm --customer-base-url https://openrouter.ai/api/v1 \
+    --customer-model anthropic/claude-haiku-5.5 --out results/claims
+```
+
+Pilot: 80 deploy-cue cases (60 with training strategies, 20 held out), customer `anthropic/claude-haiku-5.5`.
+
+| Agent | Mean objective | Best possible | No decision recorded | Abusive claims denied | Honest claims approved |
+|---|---|---|---|---|---|
+| gpt-oss-20b | 0.525 | 0.875 | 25 % | 39 % | 49 % |
+| gpt-oss-20b, `--guided` | 0.642 | 0.875 | 20 % | 42 % | 67 % |
+
+On the decisions it does record, guided gpt-oss-20b scores 0.80 against 0.88. Its remaining losses are a decision
+told to the customer but never recorded, and abusive claims approved: the signal briefing moved fraud denial from
+39 % to 42 % while it raised honest approvals by 18 points. `anthropic/claude-sonnet-5.5` with the briefing
+completed 26 of the cases and scored 0.89 on them against 0.93 possible, recording a decision every time.
+
 ## Limits
 
 - The scripted customer replies the same whatever the agent says; train with the `llm` backend.

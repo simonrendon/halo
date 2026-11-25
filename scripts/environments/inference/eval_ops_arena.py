@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Evaluate an OpenAI-compatible chat model on Ops Arena: success, each hard violation and the eval-awareness gap.
+"""Evaluate an OpenAI-compatible chat model on Ops Arena or Ops Claims (``--environment``).
 
     halo run eval-ops-arena --data data/ops_arena/eval.jsonl --base-url http://localhost:8000/v1 --model <id> \\
         --out results/ops_arena
@@ -15,8 +15,21 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
+from halo.environments.tasks.ops_arena.claims_environment import (
+    CLAIMS_GUIDANCE,
+    CLAIMS_SYSTEM_PROMPT,
+    OpsClaimsEnvironment,
+)
 from halo.environments.tasks.ops_arena.environment import OpsArenaEnvironment
-from halo.environments.tasks.ops_arena.evaluation import format_summary, run_episode, summarize
+from halo.environments.tasks.ops_arena.evaluation import (
+    format_claims_summary,
+    format_summary,
+    run_episode,
+    summarize,
+    summarize_claims,
+)
+
+SUMMARIES = {"ops_arena": (summarize, format_summary), "ops_claims": (summarize_claims, format_claims_summary)}
 
 
 def load_jsonl(path: str) -> list[dict]:
@@ -32,13 +45,18 @@ async def evaluate(args) -> None:
         random.Random(0).shuffle(rows)
         rows = rows[: args.limit]
 
-    env = OpsArenaEnvironment(
-        customer_backend=args.customer_backend,
-        customer_model=args.customer_model,
-        customer_base_url=args.customer_base_url,
-        customer_api_key_env=args.customer_api_key_env,
-        max_turns=args.max_turns,
-    )
+    customer = {
+        "customer_backend": args.customer_backend,
+        "customer_model": args.customer_model,
+        "customer_base_url": args.customer_base_url,
+        "customer_api_key_env": args.customer_api_key_env,
+        "max_turns": args.max_turns,
+    }
+    if args.environment == "ops_claims":
+        prompt = CLAIMS_SYSTEM_PROMPT + (CLAIMS_GUIDANCE if args.guided else "")
+        env = OpsClaimsEnvironment(system_prompt=prompt, **customer)
+    else:
+        env = OpsArenaEnvironment(**customer)
     client = AsyncOpenAI(base_url=args.base_url, api_key=os.environ.get(args.api_key_env, "EMPTY"), timeout=300)
     extra = json.loads(args.extra_body) if args.extra_body else None
     sem = asyncio.Semaphore(args.concurrency)
@@ -56,16 +74,19 @@ async def evaluate(args) -> None:
     with open(out / "episodes.jsonl", "w") as fh:
         for ep in episodes:
             fh.write(json.dumps(ep) + "\n")
-    summary = summarize(episodes)
+    summarize_fn, format_fn = SUMMARIES[args.environment]
+    summary = summarize_fn(episodes)
     summary["config"] = {k: v for k, v in vars(args).items() if "key" not in k}
     with open(out / "summary.json", "w") as fh:
         json.dump(summary, fh, indent=2)
-    print(format_summary(summary))
+    print(format_fn(summary))
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", help="eval.jsonl from prepare-ops-arena-dataset")
+    ap.add_argument("--environment", default="ops_arena", choices=sorted(SUMMARIES))
+    ap.add_argument("--data", help="eval.jsonl from prepare-ops-arena-dataset or prepare-ops-claims-dataset")
+    ap.add_argument("--guided", action="store_true", help="ops_claims: append CLAIMS_GUIDANCE to the system prompt")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
     ap.add_argument("--model")
     ap.add_argument("--api-key-env", default="OPENAI_API_KEY", help="variable holding the policy endpoint's key")
@@ -84,7 +105,8 @@ def main() -> None:
     ap.add_argument("--summarize-only", default="")
     args = ap.parse_args()
     if args.summarize_only:
-        print(format_summary(summarize(load_jsonl(args.summarize_only))))
+        summarize_fn, format_fn = SUMMARIES[args.environment]
+        print(format_fn(summarize_fn(load_jsonl(args.summarize_only))))
         return
     if not (args.data and args.model):
         ap.error("--data and --model are required unless --summarize-only is given")
