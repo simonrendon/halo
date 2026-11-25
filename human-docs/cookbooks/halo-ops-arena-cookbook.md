@@ -86,12 +86,13 @@ the reward reads the hidden truth, and every decision carries the agent's probab
 ([Ops Claims](../../agent-docs/training-methods/async-grpo/environments/tasks/ops-claims.md) ↗). Two domains share
 the structure: `refunds` (retail claims) and `access` (helpdesk resets that may be account takeovers). Recipe:
 [`gptoss-20b-ops-claims-lora-ep1.yaml`](../../examples/grpo/environmental/gptoss/vllm/gptoss-20b-ops-claims-lora-ep1.yaml),
-trained on `refunds`, evaluated on both.
+trained on `refunds`, evaluated on both. The hypothesis, controls, frozen test sets and decision rules are fixed in
+the [Ops Claims protocol](halo-ops-claims-protocol.md).
 
 ```bash
 halo run prepare-ops-claims-dataset --domain refunds --out data/ops_claims/refunds
 halo run prepare-ops-claims-dataset --domain access --out data/ops_claims/access
-halo run eval-ops-arena --environment ops_claims --domain access --guided \
+halo run eval-ops-arena --environment ops_claims --domain access --prompt guided \
     --data data/ops_claims/access/eval.jsonl --base-url https://openrouter.ai/api/v1 \
     --api-key-env OPENROUTER_API_KEY --model <id> --customer-backend llm \
     --customer-base-url https://openrouter.ai/api/v1 --customer-model anthropic/claude-haiku-5.5 --out results/access

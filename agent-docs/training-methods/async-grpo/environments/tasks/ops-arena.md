@@ -80,7 +80,7 @@ An agent that changes nothing succeeds on the five "change nothing" families (`r
 
 | `environment_kwargs` key | Default | Meaning |
 |---|---|---|
-| `customer_backend` | `scripted` | `scripted` or `llm` |
+| `customer_backend` | `scripted` | `scripted`, `llm` or `silent` (one neutral line; Ops Claims' records-only control) |
 | `customer_model`, `customer_base_url` | none | required by `llm` |
 | `customer_api_key_env` | `OPENROUTER_API_KEY` | variable holding the customer endpoint's key |
 | `customer_temperature` | 0.7 | customer sampling temperature |

@@ -9,6 +9,10 @@ from typing import Any
 from openai import AsyncOpenAI
 
 END_TOKEN = "[END]"
+# scripted: fixed turns; llm: a persona over an OpenAI-compatible endpoint; silent: one neutral line, so the agent
+# decides from the records alone.
+CUSTOMER_BACKENDS = ("scripted", "llm", "silent")
+SILENT_REPLY = "I have nothing to add beyond my first message."
 
 _PERSONA_RULES = {
     "honest": "You are honest. Give your postal code, the last four digits of your phone and your order number when "
@@ -49,8 +53,8 @@ class CustomerAgent:
         max_customer_turns: int = 8,
         request_timeout: float = 60.0,
     ):
-        if backend not in ("scripted", "llm"):
-            raise ValueError(f"customer backend must be 'scripted' or 'llm', got {backend!r}")
+        if backend not in CUSTOMER_BACKENDS:
+            raise ValueError(f"customer backend must be one of {CUSTOMER_BACKENDS}, got {backend!r}")
         if backend == "llm" and not (model and base_url):
             raise ValueError("customer backend 'llm' needs customer_model and customer_base_url")
         self.backend = backend
@@ -84,6 +88,8 @@ class CustomerAgent:
         n_customer = sum(1 for t in chat if t["role"] == "customer")
         if n_customer > self.max_customer_turns:
             return f"I have to go now. {END_TOKEN}"
+        if self.backend == "silent":
+            return SILENT_REPLY
         if self.backend == "scripted":
             i = n_customer - 1  # the opening line is not in the script
             return script[i] if i < len(script) else f"Okay, thanks. {END_TOKEN}"

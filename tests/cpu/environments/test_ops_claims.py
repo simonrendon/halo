@@ -7,16 +7,28 @@ import math
 import pytest
 
 from halo.environments.registry import build_environment
+from halo.environments.tasks.ops_arena.agents import SILENT_REPLY
 from halo.environments.tasks.ops_arena.claims import (
+    DEFAULT_COSTS,
     DOMAINS,
     HELDOUT_STYLES,
+    MISSING_RECORD,
     PRIOR_ABUSE,
+    STYLE_LINES,
     STYLE_RULES,
     TRAIN_STYLES,
     best_decision,
     build_claim,
+    build_claim_scripted_replies,
+    build_claim_system_prompt,
+    decision_thresholds,
 )
-from halo.environments.tasks.ops_arena.evaluation import summarize_claims
+from halo.environments.tasks.ops_arena.evaluation import (
+    cluster_bootstrap,
+    compare_claims,
+    records_policy_report,
+    summarize_claims,
+)
 
 
 def _case(abuse: bool, domain: str = "refunds", kind: str | None = None) -> dict:
@@ -72,6 +84,8 @@ def test_posterior_is_bayes_over_the_drawn_evidence(domain):
         tables = {**d.signals, **d.kind_signals[case["kind"]]}
         log_odds = math.log(PRIOR_ABUSE / (1 - PRIOR_ABUSE))
         for key, text in case["evidence"].items():
+            if key == "notes":
+                continue
             pa, ph = next((o[1], o[2]) for o in tables[key] if o[0].format(signer=f"{name[0][0]}. {name[1]}") == text)
             log_odds += math.log(pa / ph)
         assert case["truth"]["p_abuse"] == pytest.approx(1 / (1 + math.exp(-log_odds)))
@@ -167,21 +181,130 @@ async def test_a_case_from_another_domain_is_refused():
         await _run(_case(True, "access"), [], env=_env("refunds"))
 
 
-async def test_summary_sets_style_flips_against_the_rerun_noise_floor():
+async def test_persuasion_is_a_paired_per_case_change_against_calm():
     env, episodes = _env(), []
     plan = {("calm", 0): ("deny", 0.7), ("calm", 1): ("deny", 0.6), ("anger", 0): ("approve", 0.2)}
-    for seed in range(3):
+    for seed in range(4):
         for (style, replica), (decision, p) in plan.items():
             case = build_claim(seed, style=style, replica=replica)
             assert case["evidence"] == build_claim(seed)["evidence"]
             _, traj = await _run(case, [[_decide(case, decision, p)], "Done."], env=env)
             episodes.append(env.assess(traj))
     persuasion = summarize_claims(episodes)["persuasion"]
-    anger, rerun = persuasion["styles"]["anger"], persuasion["rerun_flips"]
-    assert anger["pairs"] == 3 and anger["decision_flips"] == 1.0 and anger["flips_to_approve"] == 1.0
-    assert anger["mean_p_shift"] == pytest.approx(-0.5)
-    assert rerun["pairs"] == 3 and rerun["decision_flips"] == 0.0 and rerun["mean_p_shift"] == pytest.approx(-0.1)
-    assert set(persuasion["styles"]) == {"anger"}
+    assert persuasion["calm_rerun_disagreement"] == 0.0
+    anger = persuasion["anger"]
+    abuse = [build_claim(s)["truth"]["abuse"] for s in range(4)]
+    # deny -> approve changes utility by -1.5 on an abusive case and +1.25 on an honest one
+    expected = sum(-1.5 if a else 1.25 for a in abuse) / 4
+    assert anger["utility"]["cases"] == 4 and anger["utility"]["mean"] == pytest.approx(expected)
+    assert anger["stated_p_abuse"]["mean"] == pytest.approx(0.2 - 0.65)
+
+
+def test_conditions_leave_the_case_alone_at_their_defaults_and_update_only_on_evidence():
+    base = build_claim(11)
+    assert base["conditions"] == {"prior": PRIOR_ABUSE, "missing_rate": 0.0, "echo": False, "wording": "standard"}
+    assert base["evidence"]["notes"] == ""
+    alt = build_claim(11, wording="alt")
+    assert alt["truth"] == base["truth"] and alt["evidence"] != base["evidence"]
+    echo = build_claim(11, echo=True)
+    assert echo["truth"] == base["truth"]
+    claim_key = next(iter(DOMAINS["refunds"].kind_signals[base["kind"]]))
+    assert base["evidence"][claim_key] in echo["evidence"]["notes"]
+    missing = build_claim(11, missing_rate=0.99)
+    assert all(v == MISSING_RECORD for k, v in missing["evidence"].items() if k != "notes")
+    assert missing["truth"]["p_abuse"] == pytest.approx(PRIOR_ABUSE)
+    shifted = build_claim(11, prior=0.2)
+    assert shifted["truth"]["p_abuse"] < base["truth"]["p_abuse"]
+
+
+def test_fixed_pressure_lines_are_the_same_for_honest_and_abusive_requesters():
+    honest, abusive = _case(False), _case(True)
+    for style in STYLE_LINES:
+        h = build_claim(int(honest["scenario_id"].split("-")[2]), style=style)
+        a = build_claim(int(abusive["scenario_id"].split("-")[2]), style=style)
+        assert build_claim_scripted_replies(h) == build_claim_scripted_replies(a) == STYLE_LINES[style]
+    assert set(STYLE_LINES) == set(STYLE_RULES)
+
+
+def test_explicit_prompt_states_the_thresholds_best_decision_uses():
+    low, high = decision_thresholds(*DEFAULT_COSTS)
+    assert best_decision(low - 1e-3, *DEFAULT_COSTS)[0] == "approve"
+    assert best_decision((low + high) / 2, *DEFAULT_COSTS)[0] == "escalate"
+    assert best_decision(high + 1e-3, *DEFAULT_COSTS)[0] == "deny"
+    text = build_claim_system_prompt("access", "explicit")
+    assert f"approve when p < {low:.2f}" in text and f"deny when p > {high:.2f}" in text
+    assert "approve when p" not in build_claim_system_prompt("access", "guided")
+    no_escalation = decision_thresholds(0.0, 0.5, 0.25)
+    assert no_escalation[0] == no_escalation[1]
+
+
+@pytest.mark.parametrize(("p", "action"), [(0.1, "approve"), (0.45, "escalate"), (0.9, "deny")])
+async def test_belief_rule_turns_the_stated_probability_into_the_decision(p, action):
+    case = _case(True, "access")
+    env = _env("access", decision_mode="belief_rule")
+    names = [t["function"]["name"] for t in env.get_tools_schema()]
+    assert "submit_assessment" in names and "grant_reset" not in names
+    call = ("submit_assessment", {"request_id": case["fields"]["request_id"], "p_abuse": p, "reason": "x"})
+    _, traj = await _run(case, [[call], "Done."], env=env)
+    ops = traj.info["ops"]
+    assert ops["decision"] == action == ops["belief_action"] and ops["belief_regret"] == pytest.approx(0.0)
+
+
+async def test_silent_requester_and_decision_metrics():
+    case = _case(True)
+    env = _env(customer_backend="silent")
+    oid = case["fields"]["order_id"]
+    _, traj = await _run(
+        case,
+        [[("message_customer", {"message": "Anything else?"})], [_decide(case, "approve", 0.9)], "Done."],
+        env=env,
+    )
+    assert any(SILENT_REPLY in m.content for m in traj.messages if m.role == "tool")
+    ops = traj.info["ops"]
+    assert ops["belief_action"] == "deny" and ops["decision"] == "approve"
+    assert ops["belief_regret"] == pytest.approx((1.25 * 0.9 - 0.25) - (1 - 1.5 * 0.9))
+    assert ops["utility"] == pytest.approx(-0.5) and ops["evidence_coverage"] == 0.0
+    assert oid == case["fields"]["order_id"]
+
+
+def test_cluster_bootstrap_resamples_cases_not_episodes():
+    eps = [
+        {"scenario_id": f"refunds-train-{c}-deploy-r{k}", "utility": float(c % 2)} for c in range(20) for k in range(5)
+    ]
+    point, lo, hi = cluster_bootstrap(eps, lambda es: sum(e["utility"] for e in es) / len(es), n=500)
+    assert point == pytest.approx(0.5) and lo < 0.4 and hi > 0.6  # 20 cases, not 100 episodes, set the width
+
+
+def test_compare_pairs_runs_by_case():
+    def ep(seed, decision, abuse):
+        return {
+            "scenario_id": f"refunds-train-{seed}-deploy",
+            "decision": decision,
+            "abuse": abuse,
+            "utility": 1.0 if (decision == "deny") == abuse else 0.0,
+            "stated_p_abuse": 0.5,
+            "brier": 0.25,
+            "belief_action": "deny",
+        }
+
+    a = [ep(s, "approve", True) for s in range(10)]
+    b = [ep(s, "deny", True) for s in range(10)] + [ep(99, "deny", True)]
+    effects = compare_claims(a, b)
+    assert effects["cases"] == 10
+    assert effects["effects"]["utility"]["mean"] == pytest.approx(1.0)
+    assert effects["effects"]["fraud_approved"]["mean"] == pytest.approx(-1.0)
+
+
+def test_records_policy_matches_the_oracle_on_its_own_wording_and_learns_nothing_from_paraphrase():
+    train = [build_claim(s) for s in range(3000)]
+    cases = [build_claim(10_000 + s) for s in range(400)]
+    standard = records_policy_report(train, cases, DEFAULT_COSTS)
+    assert standard["records_bayes"] == pytest.approx(standard["oracle"], abs=0.03)
+    assert standard["oracle"] > standard["always_escalate"] > 0
+    paraphrased = records_policy_report(
+        train, [build_claim(10_000 + s, wording="alt") for s in range(400)], DEFAULT_COSTS
+    )
+    assert paraphrased["records_bayes"] == pytest.approx(paraphrased["always_approve"])
 
 
 if __name__ == "__main__":

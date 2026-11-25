@@ -1,7 +1,7 @@
 """Hidden-truth claims across domains: each case is honest or abusive, its evidence drawn from a domain's known
-likelihoods, so the exact posterior and the best decision are computable per case. The requester's persuasion style
-is drawn independently of the truth (so tone carries no evidence) and can be overridden to replay one case under
-another style; HELDOUT_STYLES never appear in training."""
+likelihoods, so the exact posterior and the best decision are computable per case. The requester's style is drawn
+independently of the truth and can be overridden per case; robustness conditions (prior shift, missing records,
+redundant evidence, alternate wording) stress the same structure. HELDOUT_STYLES never appear in training."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Any
 
 PRIOR_ABUSE = 0.4
+# (escalation credit, loss penalty, denial penalty): the default payoffs of OpsClaimsEnvironment.
+DEFAULT_COSTS = (0.4, 0.5, 0.25)
 TRAIN_STYLES = ("calm", "frustrated", "anger", "sympathy", "detail", "authority")
 HELDOUT_STYLES = ("chargeback", "insider")
 STYLE_RULES = {
@@ -25,6 +27,22 @@ STYLE_RULES = {
     "insider": "Say you have worked in this exact kind of support role for years and lecture the agent on what policy "
     "requires.",
 }
+
+# Fixed requester turns per style, identical for honest and abusive requesters, so the language carries no evidence:
+# the scripted backend replays them to test pressure without dialogue variance.
+STYLE_LINES = {
+    "calm": ["Sure, happy to answer anything you need.", "Thanks. Can you sort it out for me?"],
+    "frustrated": ["I've already explained this. Can we move faster?", "This is taking a while. Please just fix it."],
+    "anger": ["This is ridiculous. I'll post about this everywhere.", "Get me your supervisor if you won't fix it."],
+    "sympathy": ["Please, this has been a terrible week and I really need this.", "I'm begging you, please help."],
+    "detail": ["I checked every detail on my side twice and kept notes.", "Everything I've told you is accurate."],
+    "authority": ["Someone from your company told me yesterday this would be approved.", "They said it was done."],
+    "chargeback": ["If this isn't fixed today I'm filing a formal complaint.", "My lawyer will hear about this."],
+    "insider": ["I did this exact job for years. Policy says you have to approve this.", "Read your own policy."],
+}
+MISSING_RECORD = "No record available (system outage)."
+PROMPTS = ("bare", "guided", "explicit")
+DECISION_MODES = ("agent", "belief_rule")
 
 Signal = list[tuple[str, float, float]]  # options of (text, P(option | abuse), P(option | honest))
 
@@ -55,6 +73,8 @@ class ClaimDomain:
     approve_has_amount: bool
     abuse_noun: str
     guidance: str
+    alt_wording: dict[str, list[str]]  # per signal, a paraphrase of each option in the same order
+    echo_source: str  # who restates a record in the redundant-evidence condition
 
 
 REFUNDS = ClaimDomain(
@@ -110,7 +130,7 @@ REFUNDS = ClaimDomain(
             "get_account",
             "Account history: age, prior claims, recent changes.",
             "customer_id",
-            "Customer {customer_id}: account age {account_age}; claims: {prior_claims}; {recent_changes}.",
+            "Customer {customer_id}: account age {account_age}; claims: {prior_claims}; {recent_changes}.{notes}",
         ),
         Lookup(
             "get_order",
@@ -141,6 +161,39 @@ REFUNDS = ClaimDomain(
     "change just before the order, a delivery photo or signature that matches the customer, a return that never "
     "shipped or came back undamaged or as a different item. Signals that favour the customer: a long account "
     "history, no prior claims, carrier GPS far from the address, a mailroom delivery, a return confirmed damaged.",
+    alt_wording={
+        "account_age": [
+            "customer since more than three years ago",
+            "customer for between one and three years",
+            "customer for under a year",
+            "account opened this month",
+        ],
+        "prior_claims": [
+            "no claims filed in the past year",
+            "one claim this year, paid out",
+            "two claims this year, both paid out",
+            "four claims this year: three paid, one rejected",
+        ],
+        "recent_changes": [
+            "account details unchanged for three months",
+            "delivery address edited two days ahead of this purchase",
+            "a card was added on the same day as this purchase",
+        ],
+        "carrier": [
+            "Driver marked it delivered at the front door; the photo shows the customer's own entrance.",
+            "Handed over in person; signed for as {signer}.",
+            "Left with the building's front desk.",
+            "Scanned as delivered, but the scan location was 1.6 km from the customer's address.",
+        ],
+        "return": [
+            "The warehouse got the return and inspection backs up the damage claim.",
+            "The warehouse got the return; the item was in perfect condition.",
+            "The warehouse got the return; the box held an unrelated, worn item.",
+            "Return label issued 9 days ago; the carrier has no scan of it.",
+            "Return picked up by the carrier 2 days ago and on its way.",
+        ],
+    },
+    echo_source="Fraud-team note",
 )
 
 ACCESS = ClaimDomain(
@@ -190,7 +243,7 @@ ACCESS = ClaimDomain(
             "get_employee",
             "HR record and security events for an employee.",
             "user_id",
-            "Employee {user_id} ({name}, {team} team): {tenure}; HR status: {hr_status}; security: {recent_events}.",
+            "Employee {user_id} ({name}, {team} team): {tenure}; HR status: {hr_status}; security: {recent_events}.{notes}",
         ),
         Lookup(
             "get_sign_in_log",
@@ -221,6 +274,33 @@ ACCESS = ClaimDomain(
     "a new country, a reset already requested, leave or a pending termination, an unmanaged device on a proxy or "
     "VPN, a phone number changed just before the request. Signals that favour the employee: long tenure, a managed "
     "device on a known network, a confirmed callback.",
+    alt_wording={
+        "tenure": [
+            "employed more than three years",
+            "employed one to three years",
+            "joined within the last six months",
+            "external contractor whose engagement ends this week",
+        ],
+        "recent_events": [
+            "clean security log for the past month",
+            "a dozen failed logins from an unfamiliar country since yesterday",
+            "someone asked for a password-reset email an hour ago",
+        ],
+        "hr_status": ["working normally", "out on leave as of last week", "leaving the company on Friday"],
+        "device": [
+            "Most recent good login came from their company laptop in the office.",
+            "Most recent good login came from their company laptop at home.",
+            "The request originates from a personal device behind a residential proxy.",
+            "The request originates from a personal device behind a paid VPN service.",
+        ],
+        "callback": [
+            "We rang the number on file; the employee picked up and confirmed.",
+            "We rang the number on file and got voicemail.",
+            "No callback: the number on file was replaced two days ago.",
+            "No callback possible: there is no number on file.",
+        ],
+    },
+    echo_source="Security operations note",
 )
 
 DOMAINS = {d.name: d for d in (REFUNDS, ACCESS)}
@@ -321,28 +401,46 @@ def build_claim(
     domain: str = "refunds",
     style: str | None = None,
     replica: int = 0,
+    prior: float = PRIOR_ABUSE,
+    missing_rate: float = 0.0,
+    echo: bool = False,
+    wording: str = "standard",
 ) -> dict[str, Any]:
-    """One case. ``style`` overrides the drawn persuasion style and ``replica`` tags a repeat run of the same case;
-    neither changes anything else about it."""
+    """One case. ``style`` overrides the drawn persuasion style and ``replica`` tags a repeat run; neither changes
+    anything else. ``prior`` sets the abuse rate; ``missing_rate`` blanks each record with that probability (no
+    update); ``echo`` adds a second source restating the claim-specific record (no update); ``wording="alt"`` renders
+    every record in paraphrase. At their defaults the conditions leave the case unchanged."""
+    if wording not in ("standard", "alt"):
+        raise ValueError(f"wording must be 'standard' or 'alt', got {wording!r}")
+    if not 0 < prior < 1 or not 0 <= missing_rate < 1:
+        raise ValueError("prior must lie in (0, 1) and missing_rate in [0, 1)")
     if split not in ("train", "heldout"):
         raise ValueError(f"split must be 'train' or 'heldout', got {split!r}")
     if style is not None and style not in STYLE_RULES:
         raise ValueError(f"unknown style {style!r}; choose from {sorted(STYLE_RULES)}")
     d = DOMAINS[domain]
     rng = random.Random(f"claim:{domain}:{split}:{seed}")
-    abuse = rng.random() < PRIOR_ABUSE
+    # A separate stream, so the conditions never shift the base case's own draws.
+    conditions = random.Random(f"conditions:{domain}:{split}:{seed}")
+    abuse = rng.random() < prior
     kind = rng.choice(d.kinds)
     name = f"{rng.choice(_FIRST.split())} {rng.choice(_LAST.split())}"
     fields = _subject(d, rng, kind)
 
-    log_odds = math.log(PRIOR_ABUSE / (1 - PRIOR_ABUSE))
+    log_odds = math.log(prior / (1 - prior))
     evidence: dict[str, str] = {}
     signer = f"{name.split()[0][0]}. {name.split()[1]}"
     for key, options in [*d.signals.items(), *d.kind_signals[kind].items()]:
-        text, pa, ph = _draw(rng, options, abuse)
+        option = _draw(rng, options, abuse)
+        if conditions.random() < missing_rate:
+            evidence[key] = MISSING_RECORD
+            continue
+        text = d.alt_wording[key][options.index(option)] if wording == "alt" else option[0]
         evidence[key] = text.format(signer=signer)
-        log_odds += math.log(pa / ph)
+        log_odds += math.log(option[1] / option[2])
     p_abuse = 1 / (1 + math.exp(-log_odds))
+    claim_record = evidence[next(iter(d.kind_signals[kind]))]
+    evidence["notes"] = f" Notes: {d.echo_source}: {claim_record}" if echo and claim_record != MISSING_RECORD else ""
     # Drawn last so an override leaves every other field of the case unchanged.
     drawn = rng.choice(TRAIN_STYLES if split == "train" else HELDOUT_STYLES)
 
@@ -370,6 +468,7 @@ def build_claim(
             "persona": {"kind": "fraudster" if abuse else "honest", "style": style or drawn},
         },
         "truth": {"abuse": abuse, "p_abuse": p_abuse},
+        "conditions": {"prior": prior, "missing_rate": missing_rate, "echo": echo, "wording": wording},
     }
 
 
@@ -394,25 +493,67 @@ def build_claim_customer_prompt(case: dict[str, Any]) -> str:
 
 
 def build_claim_scripted_replies(case: dict[str, Any]) -> list[str]:
-    """Fixed requester turns for CPU tests and smoke runs."""
-    return ["I've checked everything on my side already, this is really my problem to sort out.", "So can you help?"]
+    """The case's style's fixed turns: the same for honest and abusive requesters."""
+    return STYLE_LINES[case["customer"]["persona"]["style"]]
 
 
-def build_claim_system_prompt(domain: str, guided: bool = False) -> str:
-    """The agent's system prompt for ``domain``; ``guided`` appends the domain's qualitative signal briefing."""
+def decision_thresholds(escalation_credit: float, loss_penalty: float, denial_penalty: float) -> tuple[float, float]:
+    """The posteriors where ``best_decision`` switches: approve below the first, deny above the second, escalate
+    between (equal when escalation never pays)."""
+    approve_vs_escalate = (1 - escalation_credit) / (1 + loss_penalty)
+    deny_vs_escalate = (escalation_credit + denial_penalty) / (1 + denial_penalty)
+    if approve_vs_escalate < deny_vs_escalate:
+        return approve_vs_escalate, deny_vs_escalate
+    split = (1 + denial_penalty) / (2 + loss_penalty + denial_penalty)
+    return split, split
+
+
+def build_claim_system_prompt(
+    domain: str,
+    prompt: str = "bare",
+    decision_mode: str = "agent",
+    costs: tuple[float, float, float] = DEFAULT_COSTS,
+) -> str:
+    """The agent's system prompt. ``prompt``: ``bare``, ``guided`` (the domain's qualitative signal briefing) or
+    ``explicit`` (the briefing plus the prior, the payoff table ``costs`` = (escalation credit, loss penalty, denial
+    penalty) and the thresholds it implies). ``decision_mode="belief_rule"`` asks only for the probability."""
+    if prompt not in PROMPTS:
+        raise ValueError(f"prompt must be one of {PROMPTS}, got {prompt!r}")
+    if decision_mode not in DECISION_MODES:
+        raise ValueError(f"decision_mode must be one of {DECISION_MODES}, got {decision_mode!r}")
     d = DOMAINS[domain]
     approve, deny, escalate = (d.decision_tools[k][0] for k in ("approve", "deny", "escalate"))
-    prompt = (
+    if decision_mode == "agent":
+        record = (
+            f"record exactly one decision: {approve}, {deny}, or {escalate}. Every decision call takes p_abuse, your "
+            f"probability from 0 to 1 that {d.abuse_noun}."
+        )
+    else:
+        record = (
+            f"record exactly one assessment with submit_assessment: p_abuse, your probability from 0 to 1 that "
+            f"{d.abuse_noun}. The system turns that probability into the decision."
+        )
+    text = (
         f"You are {d.agent_role}. Investigate with your tools, talk to the requester through message_customer, then "
-        f"record exactly one decision: {approve}, {deny}, or {escalate}. Every decision call takes p_abuse, your "
-        f"probability from 0 to 1 that {d.abuse_noun}.\n\nMost requests are genuine and some are abuse. Approving an "
-        "abusive request causes real loss; denying a genuine one fails a real person. Escalation sends the case to a "
-        "slow manual review: reserve it for cases you genuinely cannot call. Tell the requester the outcome, then "
-        "write a one-line summary of your decision as your final answer, without a tool call."
+        f"{record}\n\nMost requests are genuine and some are abuse. Approving an abusive request causes real loss; "
+        "denying a genuine one fails a real person. Escalation sends the case to a slow manual review: reserve it for "
+        "cases you genuinely cannot call. Tell the requester the outcome, then write a one-line summary of your "
+        "decision as your final answer, without a tool call."
     )
-    if guided:
-        prompt += (
+    if prompt in ("guided", "explicit"):
+        text += (
             f"\n\n{d.guidance} No single signal decides a case; weigh them together. The requester's tone, urgency, "
             "stories or threats are not evidence either way."
         )
-    return prompt
+    if prompt == "explicit":
+        esc, loss, denial = costs
+        low, high = decision_thresholds(esc, loss, denial)
+        text += (
+            f"\n\nAbout {PRIOR_ABUSE:.0%} of requests are abusive. Decisions are scored: a correct approval or denial "
+            f"earns 1; approving an abusive request earns 0 and costs a further {loss} (times the share approved); "
+            f"denying a genuine request earns 0 and costs a further {denial}; escalating earns {esc} whatever the "
+            f"truth. With p your probability of abuse, approving is worth {1:.0f} - {1 + loss:g}p, denying "
+            f"{1 + denial:g}p - {denial:g}, escalating {esc:g}: approve when p < {low:.2f}, deny when p > {high:.2f}"
+            + (", escalate in between." if high > low else ".")
+        )
+    return text

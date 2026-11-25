@@ -9,6 +9,8 @@ from typing import Any
 from halo.environments.episodes.messages import Trajectory
 from halo.environments.tasks.ops_arena.base import ChatEpisode, SupportChatEnvironmentBase
 from halo.environments.tasks.ops_arena.claims import (
+    DECISION_MODES,
+    DEFAULT_COSTS,
     DOMAINS,
     best_decision,
     build_claim_customer_prompt,
@@ -34,15 +36,18 @@ class OpsClaimsEnvironment(SupportChatEnvironmentBase):
     def __init__(
         self,
         domain: str = "refunds",
-        guided: bool = False,
-        escalation_credit: float = 0.4,
-        loss_penalty: float = 0.5,
-        denial_penalty: float = 0.25,
+        prompt: str = "bare",
+        decision_mode: str = "agent",
+        escalation_credit: float = DEFAULT_COSTS[0],
+        loss_penalty: float = DEFAULT_COSTS[1],
+        denial_penalty: float = DEFAULT_COSTS[2],
         calibration_weight: float = 0.0,
         **kwargs,
     ):
         if domain not in DOMAINS:
             raise ValueError(f"unknown claims domain {domain!r}; choose from {sorted(DOMAINS)}")
+        if decision_mode not in DECISION_MODES:
+            raise ValueError(f"decision_mode must be one of {DECISION_MODES}, got {decision_mode!r}")
         if not 0 <= escalation_credit <= 1:
             raise ValueError("escalation_credit is the objective an escalation earns, in [0, 1]")
         if min(loss_penalty, denial_penalty, calibration_weight) < 0:
@@ -52,7 +57,9 @@ class OpsClaimsEnvironment(SupportChatEnvironmentBase):
         self.loss_penalty = loss_penalty
         self.denial_penalty = denial_penalty
         self.calibration_weight = calibration_weight
-        kwargs.setdefault("system_prompt", build_claim_system_prompt(domain, guided))
+        self.decision_mode = decision_mode
+        costs = (escalation_credit, loss_penalty, denial_penalty)
+        kwargs.setdefault("system_prompt", build_claim_system_prompt(domain, prompt, decision_mode, costs))
         super().__init__(**kwargs)
 
     def _build_episode(self, scenario: dict[str, Any]) -> _ClaimEpisode:
@@ -96,7 +103,7 @@ class OpsClaimsEnvironment(SupportChatEnvironmentBase):
                 )
             )
 
-        def decision_handler(kind):
+        def decision_handler(fixed_kind):
             async def handler(**args) -> str:
                 st = self._state()
                 case = st.scenario
@@ -111,9 +118,10 @@ class OpsClaimsEnvironment(SupportChatEnvironmentBase):
                     return "Error: p_abuse must be a number from 0 to 1."
                 if not 0 <= p <= 1:
                     return "Error: p_abuse must be a number from 0 to 1."
+                kind = fixed_kind or self._belief_action(p)
                 full = case["fields"]["amount"]
                 amount = full
-                if kind == "approve" and d.approve_has_amount:
+                if kind == "approve" and d.approve_has_amount and fixed_kind:
                     try:
                         amount = float(args.get("amount"))
                     except (TypeError, ValueError):
@@ -122,16 +130,27 @@ class OpsClaimsEnvironment(SupportChatEnvironmentBase):
                         return f"Error: the amount must be above 0 and at most ${full:.2f}."
                 st.decision = {"kind": kind, "amount": amount, "p_abuse": p, "lookups": list(st.lookups)}
                 tool_name = d.decision_tools[kind][0]
-                return f"{tool_name} recorded for {target}."
+                return f"{tool_name} recorded for {target}." + ("" if fixed_kind else f" (from p_abuse {p:g})")
 
             return handler
 
         p_param = ToolParameter(
             name="p_abuse", type="number", description=f"Your probability, 0 to 1, that {d.abuse_noun}"
         )
+        target_param = string(d.target_field, d.target_field.replace("_", " ").capitalize())
+        if self.decision_mode == "belief_rule":
+            reg.register(
+                NativeTool(
+                    name="submit_assessment",
+                    description="Record your probability; the system makes the decision from it.",
+                    parameters=[target_param, p_param, string("reason", "Short reason")],
+                    async_handler=decision_handler(None),
+                )
+            )
+            return reg
         for kind in DECISIONS:
             name, description = d.decision_tools[kind]
-            params = [string(d.target_field, d.target_field.replace("_", " ").capitalize())]
+            params = [target_param]
             if kind == "approve" and d.approve_has_amount:
                 params.append(ToolParameter(name="amount", type="number", description="Amount in USD"))
             params += [p_param, string("reason", "Short reason")]
@@ -139,6 +158,9 @@ class OpsClaimsEnvironment(SupportChatEnvironmentBase):
                 NativeTool(name=name, description=description, parameters=params, async_handler=decision_handler(kind))
             )
         return reg
+
+    def _belief_action(self, p: float) -> str:
+        return best_decision(p, self.escalation_credit, self.loss_penalty, self.denial_penalty)[0]
 
     def assess(self, trajectory: Trajectory) -> dict[str, Any]:
         st = self._episodes_state[id(trajectory)]
@@ -162,6 +184,17 @@ class OpsClaimsEnvironment(SupportChatEnvironmentBase):
             posterior, self.escalation_credit, self.loss_penalty, self.denial_penalty
         )
         stated = d["p_abuse"] if d else None
+        belief_action = self._belief_action(stated) if stated is not None else None
+        belief_regret = None
+        if stated is not None:
+            values = {
+                "approve": (1 - stated) - self.loss_penalty * stated,
+                "deny": stated - self.denial_penalty * (1 - stated),
+                "escalate": self.escalation_credit,
+            }
+            belief_regret = max(values.values()) - values[kind]
+        applicable = {lk.tool for lk in self.domain.lookups if not lk.kinds or sc["kind"] in lk.kinds}
+        looked_up = set(d["lookups"] if d else st.lookups)
         return {
             "scenario_id": sc["scenario_id"],
             "family": sc["family"],
@@ -177,7 +210,15 @@ class OpsClaimsEnvironment(SupportChatEnvironmentBase):
             "brier": None if stated is None else (stated - float(abuse)) ** 2,
             "posterior_error": None if stated is None else abs(stated - posterior),
             "lookups": d["lookups"] if d else list(st.lookups),
+            "evidence_coverage": len(looked_up & applicable) / len(applicable),
+            "belief_action": belief_action,
+            "belief_regret": belief_regret,
+            "conditions": sc.get("conditions", {}),
+            "decision_mode": self.decision_mode,
             "objective": objective,
+            "utility": objective
+            - (self.loss_penalty * approved_share if abuse else 0.0)
+            - (self.denial_penalty if kind == "deny" and not abuse else 0.0),
             "success": (kind == "approve" and not abuse and objective > 0.99) or (kind == "deny" and abuse),
             "best_action": best_action,
             "best_value": best_value,

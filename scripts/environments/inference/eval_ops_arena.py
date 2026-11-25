@@ -4,7 +4,9 @@
     halo run eval-ops-arena --data data/ops_arena/eval.jsonl --base-url http://localhost:8000/v1 --model <id> \\
         --out results/ops_arena
 
-Writes ``episodes.jsonl`` and ``summary.json``; ``--summarize-only <episodes.jsonl>`` re-reads saved episodes."""
+Writes ``episodes.jsonl`` and ``summary.json``. ``--summarize-only <episodes.jsonl>`` re-reads saved episodes;
+``--compare A.jsonl B.jsonl`` pairs two Ops Claims runs over the same cases; ``--records-baseline <train.jsonl>``
+scores the no-LLM policies on ``--data``."""
 
 import argparse
 import asyncio
@@ -15,12 +17,16 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from halo.environments.tasks.ops_arena.claims import DOMAINS
+from halo.environments.tasks.ops_arena.agents import CUSTOMER_BACKENDS
+from halo.environments.tasks.ops_arena.claims import DECISION_MODES, DEFAULT_COSTS, DOMAINS, PROMPTS
 from halo.environments.tasks.ops_arena.claims_environment import OpsClaimsEnvironment
 from halo.environments.tasks.ops_arena.environment import OpsArenaEnvironment
 from halo.environments.tasks.ops_arena.evaluation import (
+    compare_claims,
     format_claims_summary,
+    format_comparison,
     format_summary,
+    records_policy_report,
     run_episode,
     summarize,
     summarize_claims,
@@ -34,6 +40,15 @@ def load_jsonl(path: str) -> list[dict]:
         return [json.loads(line) for line in fh]
 
 
+def with_replica(row: dict, k: int) -> dict:
+    """``row`` as its ``k``-th repeat sample: the same case under a distinct scenario id."""
+    if k == 0:
+        return row
+    case = json.loads(row["scenario"])
+    case["scenario_id"] += f"-r{k}"
+    return row | {"scenario": json.dumps(case)}
+
+
 async def evaluate(args) -> None:
     rows = load_jsonl(args.data)
     if args.families:
@@ -41,6 +56,7 @@ async def evaluate(args) -> None:
     if args.limit:
         random.Random(0).shuffle(rows)
         rows = rows[: args.limit]
+    rows = [with_replica(r, k) for r in rows for k in range(args.samples)]
 
     customer = {
         "customer_backend": args.customer_backend,
@@ -50,7 +66,9 @@ async def evaluate(args) -> None:
         "max_turns": args.max_turns,
     }
     if args.environment == "ops_claims":
-        env = OpsClaimsEnvironment(domain=args.domain, guided=args.guided, **customer)
+        env = OpsClaimsEnvironment(
+            domain=args.domain, prompt=args.prompt, decision_mode=args.decision_mode, **customer
+        )
     else:
         env = OpsArenaEnvironment(**customer)
     client = AsyncOpenAI(base_url=args.base_url, api_key=os.environ.get(args.api_key_env, "EMPTY"), timeout=300)
@@ -83,11 +101,15 @@ def main() -> None:
     ap.add_argument("--environment", default="ops_arena", choices=sorted(SUMMARIES))
     ap.add_argument("--data", help="eval.jsonl from prepare-ops-arena-dataset or prepare-ops-claims-dataset")
     ap.add_argument("--domain", default="refunds", choices=sorted(DOMAINS), help="ops_claims: the cases' domain")
-    ap.add_argument("--guided", action="store_true", help="ops_claims: append the domain's signal briefing")
+    ap.add_argument("--prompt", default="bare", choices=PROMPTS, help="ops_claims: system prompt variant")
+    ap.add_argument(
+        "--decision-mode", default="agent", choices=DECISION_MODES, help="ops_claims: who picks the action"
+    )
+    ap.add_argument("--samples", type=int, default=1, help="repeat samples per row, clustered as one case")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
     ap.add_argument("--model")
     ap.add_argument("--api-key-env", default="OPENAI_API_KEY", help="variable holding the policy endpoint's key")
-    ap.add_argument("--customer-backend", default="scripted", choices=["scripted", "llm"])
+    ap.add_argument("--customer-backend", default="scripted", choices=CUSTOMER_BACKENDS)
     ap.add_argument("--customer-model")
     ap.add_argument("--customer-base-url")
     ap.add_argument("--customer-api-key-env", default="OPENROUTER_API_KEY")
@@ -100,7 +122,19 @@ def main() -> None:
     ap.add_argument("--extra-body", default="", help='JSON for the API, e.g. \'{"reasoning_effort": "low"}\'')
     ap.add_argument("--out", default="results/ops_arena")
     ap.add_argument("--summarize-only", default="")
+    ap.add_argument("--compare", nargs=2, metavar=("A", "B"), help="two Ops Claims episodes.jsonl files")
+    ap.add_argument("--records-baseline", default="", help="Ops Claims train.jsonl to fit the records-only policy on")
     args = ap.parse_args()
+    if args.compare:
+        print(format_comparison(compare_claims(load_jsonl(args.compare[0]), load_jsonl(args.compare[1]))))
+        return
+    if args.records_baseline:
+        if not args.data:
+            ap.error("--records-baseline scores the cases in --data")
+        train = [json.loads(r["scenario"]) for r in load_jsonl(args.records_baseline)]
+        cases = [json.loads(r["scenario"]) for r in load_jsonl(args.data)]
+        print(json.dumps(records_policy_report(train, cases, DEFAULT_COSTS), indent=2))
+        return
     if args.summarize_only:
         summarize_fn, format_fn = SUMMARIES[args.environment]
         print(format_fn(summarize_fn(load_jsonl(args.summarize_only))))

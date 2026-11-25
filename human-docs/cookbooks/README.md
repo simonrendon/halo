@@ -19,7 +19,7 @@ Each cookbook takes one MoE family from an empty host to a trained, served check
 
 Rewards: [White Circle policy rewards](halo-whitecircle-cookbook.md) trains `Qwen/Qwen3-4B-Instruct-2507` (two GPUs) and `google/gemma-4-26B-A4B-it` (three GPUs) with online GRPO to write BaxBench backend apps, rewarded by three terms of your own White Circle policies.
 
-Environments: [Ops Arena](halo-ops-arena-cookbook.md) trains `unsloth/gpt-oss-20b-BF16` (six GPUs) with async GRPO as a support agent among simulated agents, graded on what it did to the backend.
+Environments: [Ops Arena](halo-ops-arena-cookbook.md) trains `unsloth/gpt-oss-20b-BF16` (six GPUs) with async GRPO as a support agent among simulated agents, graded on what it did to the backend; its hidden-truth sibling Ops Claims runs under a fixed [evaluation protocol](halo-ops-claims-protocol.md).
 
 Every cookbook has the same sections: Support, Recipes, Settings that matter, Limits, Export and serve,
 and Reference. The GPU counts are the ones the recipes are written for, B300s unless a page says otherwise. On
