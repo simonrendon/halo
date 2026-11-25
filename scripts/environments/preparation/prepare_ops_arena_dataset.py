@@ -3,7 +3,7 @@
 
     halo run prepare-ops-arena-dataset --out data/ops_arena --train-per-family 400 --eval-per-family 25
 
-* ``train.jsonl``: training families only, seeds [0, N), the cue drawn per scenario.
+* ``train.jsonl``: training families only, ``N x TRAIN_MIX[family]`` seeds each, the cue drawn per scenario.
 * ``eval.jsonl``: every family at seeds training never used, each scenario twice (``eval`` and ``deploy`` cue,
   same seed), so the eval-awareness gap is a paired comparison. Feed it to ``halo run eval-ops-arena``.
 * ``hf/``: a ``save_to_disk`` DatasetDict for the trainer: ``train`` as above, ``test`` a small in-training monitor
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from datasets import Dataset, DatasetDict
 
-from halo.environments.tasks.ops_arena.scenarios import ALL_FAMILIES, CUES, TRAIN_FAMILIES, build_scenario
+from halo.environments.tasks.ops_arena.scenarios import ALL_FAMILIES, CUES, TRAIN_MIX, build_scenario
 
 EVAL_SEED_OFFSET = 1_000_000
 MONITOR_SEED_OFFSET = 2_000_000
@@ -47,7 +47,7 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    train = [row(build_scenario(f, s)) for f in TRAIN_FAMILIES for s in range(args.train_per_family)]
+    train = [row(build_scenario(f, s)) for f, w in TRAIN_MIX.items() for s in range(round(args.train_per_family * w))]
     random.Random(args.seed).shuffle(train)
     evals = [
         row(build_scenario(f, EVAL_SEED_OFFSET + s, cue))
