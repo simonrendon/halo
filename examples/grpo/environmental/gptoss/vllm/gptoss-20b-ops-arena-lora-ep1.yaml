@@ -1,0 +1,157 @@
+# Environmental GRPO: gpt-oss-20b as a support agent in Ops Arena (multi-agent customer ops), LoRA r=64, no EP.
+# Derived from gptoss-20b-code-contests-lora-ep1.yaml (same model, parallelism, IS trust region and server setup);
+# what differs is the environment, the turn and token budgets, and the rewards.
+#
+# Data:   python scripts/ops_arena/generate_dataset.py --out data/ops_arena
+# Serve:  the patched vllm-server image as in the code-contests recipe: --enable-return-routed-experts
+#         --moe-backend triton --enable-auto-tool-choice --tool-parser-plugin /opt/gpt_oss_text_tool_parser.py
+#         --tool-call-parser gpt_oss_text --reasoning-parser-plugin /opt/gpt_oss_reasoning_parser.py
+#         --reasoning-parser openai_gptoss, chat template = the file named below.
+# Smoke:  halo run eval-env --training_config <this file> --dataset ./data/ops_arena/hf --split test \
+#             --context_fields scenario --num_examples 20 --base_url http://localhost:8000/v1 --model <served id>
+# Train:  CUDA_VISIBLE_DEVICES=0,1,2,3 DIST_NCCL_TIMEOUT_MINUTES=60 halo launch grpo/environmental <this file> -n 4
+
+# --- Model ---
+model_name_or_path: unsloth/gpt-oss-20b-BF16
+attn_implementation: flash_attention_4  # on Hopper (no FA4 in the image) pass --attn_implementation=eager
+reset_sinks: false
+chat_template: jinja-templates/gpt-oss/gpt-oss-harmony.jinja
+force_chat_template: true
+
+# --- Parallelism (4 train GPUs, DP=4, ZeRO-2; the two servers hold the other 4) ---
+expert_parallel_size: 1
+fsdp_reshard_after_forward: false
+
+# --- LoRA ---
+use_peft: true
+lora_r: 64
+lora_alpha: 128
+lora_target_modules: [q_proj, k_proj, v_proj, o_proj, gate_up_proj, down_proj]
+lora_modules_to_save: [embed_tokens, lm_head]
+merge_expert_lora_on_save: true
+
+# --- Environment ---
+environment_type: ops_arena
+max_turns: 20
+environment_kwargs:
+  reasoning_effort: low
+  max_length_cutoff_recoveries: 2
+  violation_penalty: 0.5        # per distinct hard violation, so a violation scores below a plain failure
+  tool_error_penalty: 0.02      # malformed or failing calls; tool successes pay nothing (class default)
+  turn_overflow_penalty: 0.2    # ran out of turns without closing the case
+  max_customer_turns: 8
+  # Customer simulator. `scripted` replays fixed lines (smoke runs). For real training switch to an LLM persona
+  # through an OpenAI-compatible endpoint, e.g. OpenRouter or Nebius Token Factory:
+  customer_backend: scripted
+  # customer_backend: llm
+  # customer_model: <model id on that endpoint>
+  # customer_base_url: https://openrouter.ai/api/v1
+  # customer_api_key_env: OPENROUTER_API_KEY
+
+# --- Rewards ---
+rewards:
+  - source: environment         # objective (state-checked resolution) + safety shaping
+  # White Circle: language-level policy on every assistant message and tool-call argument. Create the policies, then
+  # paste the printed terms here:
+  #   halo run create-whitecircle-policies --environment-id <id> \
+  #       --policies examples/grpo/environmental/ops-arena/policies.json
+  # - source: whitecircle
+  #   name: conduct
+  #   environment_id: <id>
+  #   policies: [<ids printed by the tool>]
+  #   weight: 0.5
+  #   max_concurrency: 16
+  #   on_error: invalid
+  # - source: whitecircle
+  #   name: helpfulness
+  #   environment_id: <id>
+  #   policies: [<ids>]
+  #   weight: 0.25
+  #   max_concurrency: 16
+  #   on_error: invalid
+
+# --- Ray Workers ---
+rollout_actor_budget: 128
+max_concurrent_rollouts: 64
+
+# --- vLLM Servers ---
+rollout_server_configs:
+- url: "http://localhost:8000"
+  group_port: 51216
+- url: "http://localhost:8001"
+  group_port: 51217
+rollout_connection_timeout: 180.0
+request_timeout: 300.0
+max_retries: 1
+episode_timeout: 1800           # 20 turns plus customer-simulator latency; below DIST_NCCL_TIMEOUT_MINUTES
+
+# --- Rollout Generation ---
+rollout_temperature: 1.0
+rollout_top_p: 1.0
+rollout_stop_tokens: ["<|call|>"]
+rollout_max_tokens: 6144        # per turn; support turns are short
+rollout_max_answer_tokens: 2048
+rollout_max_episode_tokens: 49152
+rollout_reasoning_end_token: "<|end|><|start|>assistant<|channel|>final<|message|>"
+
+# --- Prefetch ---
+enable_prefetch: true
+
+# --- Dataset ---
+dataset: ./data/ops_arena/hf    # DatasetDict with train and test (the in-training monitor)
+context_fields: [scenario]
+max_prompt_length: null
+
+# --- GRPO objective (as the code-contests recipe: KL-free, IS bands as the trust region) ---
+num_generations: 8
+use_chunked_grpo_logprobs: true
+loss_type: dapo
+beta: 0.0
+num_iterations: 1
+epsilon: 0.2
+isr_geo_band_min: 0.95
+isr_geo_band_max: 1.05
+isr_veto_min: 1.0e-4
+isr_opsm_delta: 0.05
+skip_update_masked_frac: 0.4
+early_stop_on_skipped_updates: true
+scale_rewards_std_floor: 0.2
+routing_replay: rollout
+num_generations_eval: 1
+scale_rewards: batch
+drop_degenerate_groups: true
+balance_token_mass: true
+top_entropy_quantile: 1.0
+mask_truncated_completions: false
+
+# --- Training ---
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+eval_rollout_batch_size: 50
+dataloader_drop_last: false
+gradient_accumulation_steps: 16  # dp 4 x 16 = 64 episodes/step = 8 scenarios x 8 generations
+max_steps: 150
+learning_rate: 3.0e-06
+lr_scheduler_type: cosine
+warmup_steps: 10
+
+# --- Optimization ---
+moe_balancing: none
+gradient_checkpointing_kwargs:
+  use_reentrant: true
+fp32_grad_reduce: true
+
+# --- Output ---
+output_dir: checkpoints/env-grpo-oss-20b-ops-arena-lora-ep1
+save_steps: 15
+save_total_limit: 6
+
+# --- Eval ---
+eval_strategy: steps
+eval_steps: 25
+eval_on_start: true
+
+# --- Logging ---
+logging_steps: 1
+logging_first_step: true
+report_to: ["wandb"]
