@@ -1,13 +1,13 @@
-# Environmental GRPO: gpt-oss-20b as a claims agent in Ops Claims (hidden-truth refund claims against honest and
-# fraudulent simulated customers), LoRA r=64, no EP. Same model, parallelism and server setup as the Ops Arena recipe.
+# Environmental GRPO: gpt-oss-20b in Ops Claims (hidden-truth cases against honest and abusive simulated requesters),
+# trained on the refunds domain; evaluate on `access` for transfer. LoRA r=64, no EP; the Ops Arena recipe's layout.
 #
 # Guide:  human-docs/cookbooks/halo-ops-arena-cookbook.md
-# Data:   halo run prepare-ops-claims-dataset --out data/ops_claims
+# Data:   halo run prepare-ops-claims-dataset --domain refunds --out data/ops_claims/refunds
 # Serve:  the patched vllm-server image as in the code-contests recipe: --enable-return-routed-experts
 #         --moe-backend triton --enable-auto-tool-choice --tool-parser-plugin /opt/gpt_oss_text_tool_parser.py
 #         --tool-call-parser gpt_oss_text --reasoning-parser-plugin /opt/gpt_oss_reasoning_parser.py
 #         --reasoning-parser openai_gptoss, chat template = the file named below.
-# Smoke:  halo run eval-env --training_config <this file> --dataset ./data/ops_claims/hf --split test \
+# Smoke:  halo run eval-env --training_config <this file> --dataset ./data/ops_claims/refunds/hf --split test \
 #             --context_fields scenario --num_examples 20 --base_url http://localhost:8000/v1 --model <served id>
 # Train:  CUDA_VISIBLE_DEVICES=0,1,2,3 DIST_NCCL_TIMEOUT_MINUTES=60 halo launch grpo/environmental <this file> -n 4
 
@@ -36,9 +36,11 @@ max_turns: 20
 environment_kwargs:
   reasoning_effort: low
   max_length_cutoff_recoveries: 2
-  escalation_credit: 0.6        # objective for escalating; the best policy escalates near p_abuse 0.5
-  loss_penalty: 0.5             # extra cost of approving an abusive claim, scaled by the amount
-  denial_penalty: 0.25          # extra cost of denying an honest customer
+  domain: refunds
+  escalation_credit: 0.4        # an always-escalate agent scores this; the best policy escalates only near 0.45
+  calibration_weight: 0.0       # outcome-only reward; raise for the calibration ablation
+  loss_penalty: 0.5             # extra cost of approving an abusive case, scaled by the approved share
+  denial_penalty: 0.25          # extra cost of denying an honest requester
   tool_error_penalty: 0.02
   turn_overflow_penalty: 0.2
   max_customer_turns: 8
@@ -98,7 +100,7 @@ rollout_reasoning_end_token: "<|end|><|start|>assistant<|channel|>final<|message
 enable_prefetch: true
 
 # --- Dataset ---
-dataset: ./data/ops_claims/hf   # DatasetDict with train and test (the in-training monitor)
+dataset: ./data/ops_claims/refunds/hf  # DatasetDict with train and test (the in-training monitor)
 context_fields: [scenario]
 max_prompt_length: null
 

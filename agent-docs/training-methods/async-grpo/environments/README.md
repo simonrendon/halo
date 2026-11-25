@@ -26,7 +26,7 @@ An episode ends when the environment reports it done, or at `max_turns`.
 | `codeforces` | `CodeContestsEnvironment` | same, graded by token comparison | 15 |
 | `mcp` | `NativeMCPClientEnvironment` | whatever the server advertises | 10 |
 | `ops_arena` | `OpsArenaEnvironment` | customer-ops backend, supervisor, team inbox, customer chat ([Ops Arena](tasks/ops-arena.md)) | 20 |
-| `ops_claims` | `OpsClaimsEnvironment` | account, order and return records, approve / deny / escalate, customer chat ([Ops Claims](tasks/ops-claims.md)) | 20 |
+| `ops_claims` | `OpsClaimsEnvironment` | per-domain evidence records, approve / deny / escalate with a probability, requester chat ([Ops Claims](tasks/ops-claims.md)) | 20 |
 
 The last column is the class's own turn budget, which `max_turns: null` keeps.
 

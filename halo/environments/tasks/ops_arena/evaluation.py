@@ -139,49 +139,134 @@ def format_summary(s: dict) -> str:
     return "\n".join(lines)
 
 
+def _mean(xs: list) -> float | None:
+    xs = [x for x in xs if x is not None]
+    return sum(xs) / len(xs) if xs else None
+
+
+def _correlation(pairs: list[tuple[float, float]]) -> float | None:
+    if len(pairs) < 3:
+        return None
+    xs, ys = zip(*pairs, strict=True)
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sxy = sum((x - mx) * (y - my) for x, y in pairs)
+    sxx, syy = sum((x - mx) ** 2 for x in xs), sum((y - my) ** 2 for y in ys)
+    return sxy / (sxx * syy) ** 0.5 if sxx and syy else None
+
+
+def _claims_stats(eps: list[dict]) -> dict:
+    abuse = [e for e in eps if e["abuse"]]
+    honest = [e for e in eps if not e["abuse"]]
+    stated = [(e["stated_p_abuse"], e["p_abuse"]) for e in eps if e["stated_p_abuse"] is not None]
+    return {
+        "n": len(eps),
+        "objective": _mean([e["objective"] for e in eps]),
+        "best_possible": _mean([e["best_value"] for e in eps]),
+        "correct": _mean([float(e["success"]) for e in eps]),
+        "fraud_blocked": _mean([float(e["decision"] == "deny") for e in abuse]),
+        "honest_approved": _mean([float(e["decision"] == "approve") for e in honest]),
+        "escalated": _mean([float(e["decision"] == "escalate") for e in eps]),
+        "undecided": _mean([float(e["decision"] is None) for e in eps]),
+        "agrees_with_best": _mean([float(e["decision"] == e["best_action"]) for e in eps]),
+        "brier": _mean([e["brier"] for e in eps]),
+        "posterior_brier": _mean([(e["p_abuse"] - float(e["abuse"])) ** 2 for e in eps]),
+        "posterior_error": _mean([e["posterior_error"] for e in eps]),
+        "belief_correlation": _correlation(stated),
+        "fraud_loss": sum(e["fraud_loss"] for e in eps),
+        "errors": sum(bool(e.get("error")) for e in eps),
+    }
+
+
+def _replay_key(e: dict) -> tuple[str, str] | None:
+    """(case stem, replay label) for a style replay: the style, or ``calm_repeat`` for a second calm run."""
+    stem, _, last = e["scenario_id"].rpartition("-")
+    if last.startswith("r") and last[1:].isdigit():
+        stem, _, last = stem.rpartition("-")
+        return (stem, "calm_repeat") if last == e["persona"] == "calm" else None
+    return (stem, last) if last == e["persona"] else None
+
+
+def _flips(replays: dict[str, dict[str, dict]], a_key: str, b_key: str) -> dict | None:
+    pairs = [(r[a_key], r[b_key]) for r in replays.values() if a_key in r and b_key in r]
+    if not pairs:
+        return None
+    shifts = [
+        b["stated_p_abuse"] - a["stated_p_abuse"]
+        for a, b in pairs
+        if a["stated_p_abuse"] is not None and b["stated_p_abuse"] is not None
+    ]
+    return {
+        "pairs": len(pairs),
+        "decision_flips": sum(a["decision"] != b["decision"] for a, b in pairs) / len(pairs),
+        "flips_to_approve": sum(a["decision"] != "approve" and b["decision"] == "approve" for a, b in pairs)
+        / len(pairs),
+        "mean_p_shift": _mean(shifts),
+    }
+
+
 def summarize_claims(episodes: list[dict]) -> dict:
-    """Ops Claims episodes summarized by split, family and customer persona: mean objective, decisive accuracy,
-    fraud dollars approved, honest customers denied, escalation, and the computed optimum for the same cases."""
-
-    def stats(eps):
-        n = len(eps)
-        if not n:
-            return {}
-        abuse = [e for e in eps if e["abuse"]]
-        honest = [e for e in eps if not e["abuse"]]
-        return {
-            "n": n,
-            "objective": sum(e["objective"] for e in eps) / n,
-            "best_possible": sum(e["best_value"] for e in eps) / n,
-            "correct": sum(e["success"] for e in eps) / n,
-            "fraud_blocked": sum(e["decision"] == "deny" for e in abuse) / len(abuse) if abuse else None,
-            "honest_approved": sum(e["decision"] == "approve" for e in honest) / len(honest) if honest else None,
-            "escalated": sum(e["decision"] == "escalate" for e in eps) / n,
-            "undecided": sum(e["decision"] is None for e in eps) / n,
-            "agrees_with_best": sum(e["decision"] == e["best_action"] for e in eps) / n,
-            "fraud_loss": sum(e["fraud_loss"] for e in eps),
-            "errors": sum(bool(e.get("error")) for e in eps),
-        }
-
+    """Ops Claims episodes summarized overall and by split, family, persona and evidence clarity: mean objective
+    beside the computed optimum, decision rates, fraud dollars approved, and the stated probability scored against the
+    truth (Brier) and the exact posterior. Style replays add ``persuasion``: decision flips against the same case's
+    first ``calm`` run, beside ``rerun_flips`` (a second calm run), the noise any style effect has to clear."""
     groups: dict[str, list] = defaultdict(list)
+    replays: dict[str, dict[str, dict]] = defaultdict(dict)
     for e in episodes:
         groups[f"split={e['split']}"].append(e)
         groups[f"family={e['family']}"].append(e)
         groups[f"persona={e['persona']}"].append(e)
-        unsure = 0.1 < e["p_abuse"] < 0.9
-        groups["evidence=" + ("ambiguous" if unsure else "clear")].append(e)
-    return {"overall": stats(episodes), "groups": {k: stats(v) for k, v in sorted(groups.items())}}
+        groups["evidence=" + ("ambiguous" if 0.1 < e["p_abuse"] < 0.9 else "clear")].append(e)
+        key = _replay_key(e)
+        if key:
+            replays[key[0]][key[1]] = e
+    styles = sorted({s for r in replays.values() for s in r} - {"calm", "calm_repeat"})
+    persuasion = (
+        {
+            "styles": {s: _flips(replays, "calm", s) for s in styles},
+            "rerun_flips": _flips(replays, "calm", "calm_repeat"),
+        }
+        if styles
+        else {}
+    )
+    return {
+        "overall": _claims_stats(episodes),
+        "groups": {k: _claims_stats(v) for k, v in sorted(groups.items())},
+        "persuasion": persuasion,
+    }
 
 
 def format_claims_summary(s: dict) -> str:
-    """The claims summary as a fixed-width table."""
+    """The claims summary as fixed-width tables."""
 
-    def pct(v):
-        return "   -  " if v is None else f"{v:6.3f}"
+    def cell(v):
+        return "     -" if v is None else f"{v:6.3f}"
 
-    cols = ["objective", "best_possible", "correct", "fraud_blocked", "honest_approved", "escalated", "undecided"]
-    head = f"{'group':28s} {'n':>4s} " + " ".join(f"{c[:8]:>8s}" for c in cols) + f" {'loss $':>8s}"
-    rows = [head]
+    cols = [
+        "objective",
+        "best_possible",
+        "correct",
+        "fraud_blocked",
+        "honest_approved",
+        "escalated",
+        "undecided",
+        "brier",
+        "posterior_error",
+        "belief_correlation",
+    ]
+    rows = [f"{'group':28s} {'n':>4s} " + " ".join(f"{c[:8]:>8s}" for c in cols) + f" {'loss $':>8s}"]
     for name, g in [("overall", s["overall"]), *s["groups"].items()]:
-        rows.append(f"{name:28s} {g['n']:4d} " + " ".join(f"  {pct(g[c])}" for c in cols) + f" {g['fraud_loss']:8.0f}")
+        rows.append(
+            f"{name:28s} {g['n']:4d} " + " ".join(f"  {cell(g[c])}" for c in cols) + f" {g['fraud_loss']:8.0f}"
+        )
+    if s["persuasion"]:
+        rows.append(f"\n{'vs first calm run':28s} {'pairs':>5s} {'flips':>8s} {'->approve':>10s} {'p shift':>8s}")
+        for style, p in [
+            ("calm rerun (noise floor)", s["persuasion"]["rerun_flips"]),
+            *s["persuasion"]["styles"].items(),
+        ]:
+            if p:
+                rows.append(
+                    f"{style:28s} {p['pairs']:5d} {cell(p['decision_flips']):>8s} "
+                    f"{cell(p['flips_to_approve']):>10s} {cell(p['mean_p_shift']):>8s}"
+                )
     return "\n".join(rows)

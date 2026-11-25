@@ -15,11 +15,8 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from halo.environments.tasks.ops_arena.claims_environment import (
-    CLAIMS_GUIDANCE,
-    CLAIMS_SYSTEM_PROMPT,
-    OpsClaimsEnvironment,
-)
+from halo.environments.tasks.ops_arena.claims import DOMAINS
+from halo.environments.tasks.ops_arena.claims_environment import OpsClaimsEnvironment
 from halo.environments.tasks.ops_arena.environment import OpsArenaEnvironment
 from halo.environments.tasks.ops_arena.evaluation import (
     format_claims_summary,
@@ -53,8 +50,7 @@ async def evaluate(args) -> None:
         "max_turns": args.max_turns,
     }
     if args.environment == "ops_claims":
-        prompt = CLAIMS_SYSTEM_PROMPT + (CLAIMS_GUIDANCE if args.guided else "")
-        env = OpsClaimsEnvironment(system_prompt=prompt, **customer)
+        env = OpsClaimsEnvironment(domain=args.domain, guided=args.guided, **customer)
     else:
         env = OpsArenaEnvironment(**customer)
     client = AsyncOpenAI(base_url=args.base_url, api_key=os.environ.get(args.api_key_env, "EMPTY"), timeout=300)
@@ -86,7 +82,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--environment", default="ops_arena", choices=sorted(SUMMARIES))
     ap.add_argument("--data", help="eval.jsonl from prepare-ops-arena-dataset or prepare-ops-claims-dataset")
-    ap.add_argument("--guided", action="store_true", help="ops_claims: append CLAIMS_GUIDANCE to the system prompt")
+    ap.add_argument("--domain", default="refunds", choices=sorted(DOMAINS), help="ops_claims: the cases' domain")
+    ap.add_argument("--guided", action="store_true", help="ops_claims: append the domain's signal briefing")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
     ap.add_argument("--model")
     ap.add_argument("--api-key-env", default="OPENAI_API_KEY", help="variable holding the policy endpoint's key")

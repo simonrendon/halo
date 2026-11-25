@@ -81,30 +81,40 @@ without the supervisor; the same text in the team inbox does not. Every other fa
 
 ## Ops Claims
 
-The second environment in the package: each refund claim is honest or abusive, the evidence is drawn from known
-likelihoods, and the reward reads the hidden truth
-([Ops Claims](../../agent-docs/training-methods/async-grpo/environments/tasks/ops-claims.md) ↗). Recipe:
-[`gptoss-20b-ops-claims-lora-ep1.yaml`](../../examples/grpo/environmental/gptoss/vllm/gptoss-20b-ops-claims-lora-ep1.yaml).
+The second environment in the package: each case is honest or abusive, the evidence is drawn from known likelihoods,
+the reward reads the hidden truth, and every decision carries the agent's probability that the case is abusive
+([Ops Claims](../../agent-docs/training-methods/async-grpo/environments/tasks/ops-claims.md) ↗). Two domains share
+the structure: `refunds` (retail claims) and `access` (helpdesk resets that may be account takeovers). Recipe:
+[`gptoss-20b-ops-claims-lora-ep1.yaml`](../../examples/grpo/environmental/gptoss/vllm/gptoss-20b-ops-claims-lora-ep1.yaml),
+trained on `refunds`, evaluated on both.
 
 ```bash
-halo run prepare-ops-claims-dataset --out data/ops_claims
-halo run eval-ops-arena --environment ops_claims --guided --data data/ops_claims/eval.jsonl \
-    --base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY --model <id> \
-    --customer-backend llm --customer-base-url https://openrouter.ai/api/v1 \
-    --customer-model anthropic/claude-haiku-5.5 --out results/claims
+halo run prepare-ops-claims-dataset --domain refunds --out data/ops_claims/refunds
+halo run prepare-ops-claims-dataset --domain access --out data/ops_claims/access
+halo run eval-ops-arena --environment ops_claims --domain access --guided \
+    --data data/ops_claims/access/eval.jsonl --base-url https://openrouter.ai/api/v1 \
+    --api-key-env OPENROUTER_API_KEY --model <id> --customer-backend llm \
+    --customer-base-url https://openrouter.ai/api/v1 --customer-model anthropic/claude-haiku-5.5 --out results/access
 ```
 
-Pilot: 80 deploy-cue cases (60 with training strategies, 20 held out), customer `anthropic/claude-haiku-5.5`.
+Baseline: `openai/gpt-oss-20b` at temperature 1.0, requester `anthropic/claude-haiku-5.5`, 200 deploy-cue cases per
+domain (100 with training styles, 100 held out).
 
-| Agent | Mean objective | Best possible | No decision recorded | Abusive claims denied | Honest claims approved |
-|---|---|---|---|---|---|
-| gpt-oss-20b | 0.525 | 0.875 | 25 % | 39 % | 49 % |
-| gpt-oss-20b, `--guided` | 0.642 | 0.875 | 20 % | 42 % | 67 % |
+| Domain, prompt | Objective | Best possible | Abusive denied | Honest approved | Undecided | Belief vs posterior (r) |
+|---|---|---|---|---|---|---|
+| refunds | 0.587 | 0.812 | 30 % | 70 % | 12 % | 0.60 |
+| refunds, guided | 0.621 | 0.812 | 44 % | 67 % | 12 % | 0.70 |
+| access | 0.487 | 0.746 | 9 % | 60 % | 23 % | 0.53 |
+| access, guided | 0.583 | 0.746 | 5 % | 81 % | 14 % | 0.72 |
 
-On the decisions it does record, guided gpt-oss-20b scores 0.80 against 0.88. Its remaining losses are a decision
-told to the customer but never recorded, and abusive claims approved: the signal briefing moved fraud denial from
-39 % to 42 % while it raised honest approvals by 18 points. `anthropic/claude-sonnet-5.5` with the briefing
-completed 26 of the cases and scored 0.89 on them against 0.93 possible, recording a decision every time.
+In `access` the model's stated probability tracks the posterior, but it does not act on it: on guided cases where it
+states 0.6 or more it escalated 26 times and denied 6, and on cases whose posterior is 0.8 or more it still granted 9
+resets of 33. In `refunds` it denies when it believes abuse.
+
+Persuasion replays (50 guided cases per domain, each under six styles plus a second calm run): a second calm run
+changes the decision on 42 % (`refunds`) and 44 % (`access`) of cases, 29 % to 42 % even where the posterior is below
+0.1 or above 0.9. Style replays flip 42 % to 62 %, so at baseline any persuasion effect is small beside the
+model's run-to-run inconsistency, which is itself the larger measurable weakness.
 
 ## Limits
 
