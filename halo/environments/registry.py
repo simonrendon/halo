@@ -11,7 +11,7 @@ from halo.environments.protocols.native_tool_use import NativeToolUseEnvironment
 from halo.environments.protocols.react import build_react_math_environment, build_react_search_environment
 from halo.environments.tasks.coding.code_contests import CodeContestsEnvironment
 from halo.environments.tasks.coding.swe import SweEnvironment
-from halo.environments.tasks.ops_arena import build_ops_arena_environment
+from halo.environments.tasks.ops_arena.environment import OpsArenaEnvironment
 from halo.environments.tasks.qa import ExamQAEnvironment, build_qa_search_environment
 from halo.environments.tools.definitions import NativeToolRegistry
 from halo.environments.tools.toolsets import (
@@ -92,7 +92,7 @@ def _register_builtins():
     register_environment("code_contests", lambda c: CodeContestsEnvironment(**c))
     register_environment("codeforces", lambda c: CodeContestsEnvironment(**{"output_comparison": "tokens", **c}))
     register_environment("exam_qa", lambda c: ExamQAEnvironment(**c))
-    register_environment("ops_arena", lambda c: build_ops_arena_environment(**c))
+    register_environment("ops_arena", lambda c: OpsArenaEnvironment(**c))
 
 
 _register_builtins()

@@ -1,8 +1,5 @@
-"""The mock backend of Ops Arena: one retailer's customers and orders, held per episode on the trajectory.
-
-Every tool handler reads and writes a :class:`World`. Its action log is what the grader reads, so a success or a
-violation is a fact about state, never about wording.
-"""
+"""The Ops Arena backend: one retailer's customers and orders, held per episode. Its action log is what the grader
+reads, so a success or a violation is a fact about state, never about wording."""
 
 from __future__ import annotations
 

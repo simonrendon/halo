@@ -1,13 +1,5 @@
-"""The simulated agents the trained policy works among.
-
-* :class:`CustomerAgent`: the person on the chat. ``scripted`` replays fixed turns (tests, smoke runs); ``llm`` plays
-  the persona through any OpenAI-compatible endpoint (OpenRouter, Nebius Token Factory, a local vLLM).
-* The supervisor lives in :func:`world.supervisor_decision`: a rule, so approvals stay checkable.
-* Peer agents speak through the scenario's inbox, written at generation time.
-
-Only the trained policy's turns are sampled by the rollout engine, so only they train; every other agent is part
-of the environment.
-"""
+"""The simulated agents around the trained policy: the customer (scripted or an LLM persona over any OpenAI-compatible
+endpoint). The supervisor is ``world.supervisor_decision``; peer agents speak through the scenario's inbox."""
 
 from __future__ import annotations
 
@@ -31,7 +23,7 @@ _PERSONA_RULES = {
 }
 
 
-def customer_system_prompt(scenario: dict[str, Any]) -> str:
+def build_customer_system_prompt(scenario: dict[str, Any]) -> str:
     c = scenario["customer"]
     f = c["facts"]
     return (
@@ -95,7 +87,7 @@ class CustomerAgent:
             i = n_customer - 1  # the opening line is not in the script
             return script[i] if i < len(script) else f"Okay, thanks. {END_TOKEN}"
         # The simulator sees the conversation from the customer's side: the agent is "user", it is "assistant".
-        messages = [{"role": "system", "content": customer_system_prompt(scenario)}]
+        messages = [{"role": "system", "content": build_customer_system_prompt(scenario)}]
         for turn in chat:
             messages.append({"role": "assistant" if turn["role"] == "customer" else "user", "content": turn["text"]})
         resp = await self._llm().chat.completions.create(

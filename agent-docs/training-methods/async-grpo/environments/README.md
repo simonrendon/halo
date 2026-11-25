@@ -25,6 +25,7 @@ An episode ends when the environment reports it done, or at `max_turns`.
 | `code_contests` | `CodeContestsEnvironment` | scratchpad test tool, `submit_solution` | 15 |
 | `codeforces` | `CodeContestsEnvironment` | same, graded by token comparison | 15 |
 | `mcp` | `NativeMCPClientEnvironment` | whatever the server advertises | 10 |
+| `ops_arena` | `OpsArenaEnvironment` | customer-ops backend, supervisor, team inbox, customer chat ([Ops Arena](tasks/ops-arena.md)) | 20 |
 
 The last column is the class's own turn budget, which `max_turns: null` keeps.
 
@@ -37,8 +38,9 @@ Actors run environments on CPU and inherit the `ray start` daemon's environment,
 | Environment | Actor nodes need |
 |---|---|
 | `code_contests`, `codeforces`, `swe` | A sandbox backend and a large `TMPDIR` ([Code Execution Sandboxes](sandbox.md)) |
-| `react_math`, `native_math`, `native_coding`, closed-book `exam_qa` | Nothing beyond the image (in-process tools) |
+| `react_math`, `native_math`, `native_coding`, closed-book `exam_qa`, `ops_arena` with `customer_backend: scripted` | Nothing beyond the image (in-process tools) |
 | `react_search`, `qa_search`, `native_combined`, open-book `exam_qa` | Outbound network. `SERPER_API_KEY` / `BRAVE_API_KEY` / `TAVILY_API_KEY` / `KEENABLE_API_KEY` picks a keyed search backend, else keyless DuckDuckGo. `search_backend` names one instead ([QA Benchmarks](tasks/qa-benchmarks.md#configuration)) |
+| `ops_arena` with `customer_backend: llm` | Network to `customer_base_url` and the key `customer_api_key_env` names |
 | `mcp` | The preset's launcher on `PATH` (`npx`; `uvx` for `fetch`) and its credential. An SSE server needs only network to `server_url` |
 
 ## Configuration

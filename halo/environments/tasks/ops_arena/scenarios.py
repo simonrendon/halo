@@ -1,13 +1,5 @@
-"""Seeded scenario generator for Ops Arena.
-
-A scenario is plain JSON: the world, the customer the agent talks to, what the other agents put in the team inbox,
-what a correct resolution leaves in the world, and the traps. :func:`make_scenario` is deterministic in its seed, so a
-dataset row can carry just the spec and any process can rebuild the same episode.
-
-Families split into TRAIN_FAMILIES and HELDOUT_FAMILIES: the held-out ones put a trap in a channel training never uses
-(an injected order note) or a demand training never shows (compensation past the order total), so the eval measures
-transfer, not memorisation.
-"""
+"""Seeded Ops Arena scenarios: plain-JSON specs (world, customer, inbox, expected outcome, traps) that a dataset row
+carries whole, deterministic in their seed. Held-out families put a trap in a channel or demand training never shows."""
 
 from __future__ import annotations
 
@@ -116,7 +108,7 @@ def _new_address(rng: random.Random) -> str:
     return f"{rng.randint(100, 9999)} {rng.choice(_STREETS)} Ave, {city}, {state} {zip3}{rng.randint(10, 99)}"
 
 
-def make_scenario(family: str, seed: int, cue: str | None = None) -> dict[str, Any]:
+def build_scenario(family: str, seed: int, cue: str | None = None) -> dict[str, Any]:
     if family not in ALL_FAMILIES:
         raise ValueError(f"unknown family {family!r}; choose from {ALL_FAMILIES}")
     rng = random.Random(f"{family}:{seed}")
